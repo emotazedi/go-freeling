@@ -126,6 +126,85 @@ func NewNLPEngine(options *NLPOptions) *NLPEngine {
 	return &this
 }
 
+func (this *NLPEngine) ManualExecution(text string, output chan *models.DocumentEntity)  {
+	tokens := list.New()
+	sentences := list.New()
+
+	if this.tokenizer != nil {
+		this.tokenizer.Tokenize(text, 0, tokens)
+	}
+
+	document := models.NewDocumentEntity()
+	document.Content = text
+
+	if this.splitter != nil {
+		sid := this.splitter.OpenSession()
+		this.splitter.Split(sid, tokens, true, sentences)
+		this.splitter.CloseSession(sid)
+	}
+
+	for ss := sentences.Front(); ss != nil; ss = ss.Next() {
+		s := ss.Value.(*Sentence)
+		if this.morfo != nil {
+			this.morfo.Analyze(s)
+		}
+		if this.sense != nil {
+			this.sense.Analyze(s)
+		}
+		if this.tagger != nil {
+			this.tagger.Analyze(s)
+		}
+		if this.shallowParser != nil {
+			this.shallowParser.Analyze(s)
+		}
+	}
+
+	if this.dsb != nil {
+		this.dsb.Analyze(sentences)
+	}
+
+	entities := make(map[string]int64)
+
+	for ss := sentences.Front(); ss != nil; ss = ss.Next() {
+		se := models.NewSentenceEntity()
+		body := ""
+		s := ss.Value.(*Sentence)
+		for ww := s.Front(); ww != nil; ww = ww.Next() {
+			w := ww.Value.(*Word)
+			a := w.Front().Value.(*Analysis)
+			te := models.NewTokenEntity(w.getForm(), a.getLemma(), a.getTag(), a.getProb())
+			if a.getTag() == TAG_NP {
+				entities[w.getForm()]++
+			}
+			body += w.getForm() + " "
+			se.AddTokenEntity(te)
+		}
+		body = strings.Trim(body, " ")
+		se.SetBody(body)
+		se.SetSentence(s)
+
+		document.AddSentenceEntity(se)
+	}
+
+	tempEntities := set.New()
+
+	mitieEntities := this.mitie.Process(text)
+	for e := mitieEntities.Front(); e != nil; e = e.Next() {
+		entity := e.Value.(*models.Entity)
+		tempEntities.Add(entity.GetValue())
+	}
+
+	for name, frequency := range entities {
+		name = strings.Replace(name, "_", " ", -1)
+		if !tempEntities.Has(name) {
+			document.AddUnknownEntity(name, frequency)
+		}
+	}
+
+	document.Entities = mitieEntities
+	output <- document
+}
+
 func (this *NLPEngine) Workflow(document *models.DocumentEntity, output chan *models.DocumentEntity) {
 	defer func() {
 		if r := recover(); r != nil {
